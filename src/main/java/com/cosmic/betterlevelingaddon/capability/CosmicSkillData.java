@@ -1,6 +1,7 @@
 package com.cosmic.betterlevelingaddon.capability;
 
 import com.cosmic.betterlevelingaddon.skill.SkillNode;
+import com.cosmic.betterlevelingaddon.skill.SkillTreeRegistry;
 import net.minecraft.nbt.CompoundNBT;
 
 import java.util.Collections;
@@ -11,6 +12,7 @@ public class CosmicSkillData implements ICosmicSkillData {
     private int availablePoints = 0;
     private int lastRewardedMilestones = 0;
     private final Map<String, Integer> nodeLevels = new HashMap<>();
+    private final Map<String, Integer> skillMilestones = new HashMap<>();
 
     @Override
     public int getAvailablePoints() {
@@ -30,6 +32,23 @@ public class CosmicSkillData implements ICosmicSkillData {
     }
 
     @Override
+    public int getSpentPoints() {
+        int spent = 0;
+        for (Map.Entry<String, Integer> entry : nodeLevels.entrySet()) {
+            SkillNode node = SkillTreeRegistry.getNode(entry.getKey());
+            int lvl = entry.getValue();
+            if (node != null) {
+                for (int i = 0; i < lvl; i++) {
+                    spent += node.getCostForNextLevel(i);
+                }
+            } else {
+                spent += lvl;
+            }
+        }
+        return spent;
+    }
+
+    @Override
     public int getLastRewardedMilestones() {
         return lastRewardedMilestones;
     }
@@ -37,6 +56,23 @@ public class CosmicSkillData implements ICosmicSkillData {
     @Override
     public void setLastRewardedMilestones(int milestones) {
         this.lastRewardedMilestones = Math.max(0, milestones);
+    }
+
+    @Override
+    public int getSkillMilestone(String skillKey) {
+        return skillMilestones.getOrDefault(skillKey, 0);
+    }
+
+    @Override
+    public void setSkillMilestone(String skillKey, int milestone) {
+        if (milestone > 0) {
+            skillMilestones.put(skillKey, milestone);
+        }
+    }
+
+    @Override
+    public Map<String, Integer> getAllSkillMilestones() {
+        return Collections.unmodifiableMap(skillMilestones);
     }
 
     @Override
@@ -63,7 +99,7 @@ public class CosmicSkillData implements ICosmicSkillData {
         if (node == null) return false;
         Map<String, Integer> prereqs = node.getPrerequisites();
         if (prereqs.isEmpty()) {
-            return true; // Три стартовых навыка открыты изначально
+            return true;
         }
         for (Map.Entry<String, Integer> entry : prereqs.entrySet()) {
             if (getNodeLevel(entry.getKey()) < entry.getValue()) {
@@ -101,19 +137,7 @@ public class CosmicSkillData implements ICosmicSkillData {
 
     @Override
     public void resetAllSkills() {
-        // При сбросе возвращаем все потраченные очки
-        int refunded = 0;
-        for (Map.Entry<String, Integer> entry : nodeLevels.entrySet()) {
-            SkillNode node = com.cosmic.betterlevelingaddon.skill.SkillTreeRegistry.getNode(entry.getKey());
-            int lvl = entry.getValue();
-            if (node != null) {
-                for (int i = 0; i < lvl; i++) {
-                    refunded += node.getCostForNextLevel(i);
-                }
-            } else {
-                refunded += lvl;
-            }
-        }
+        int refunded = getSpentPoints();
         nodeLevels.clear();
         this.availablePoints += refunded;
     }
@@ -123,11 +147,18 @@ public class CosmicSkillData implements ICosmicSkillData {
         CompoundNBT tag = new CompoundNBT();
         tag.putInt("AvailablePoints", availablePoints);
         tag.putInt("LastRewardedMilestones", lastRewardedMilestones);
+
         CompoundNBT nodesTag = new CompoundNBT();
         for (Map.Entry<String, Integer> entry : nodeLevels.entrySet()) {
             nodesTag.putInt(entry.getKey(), entry.getValue());
         }
         tag.put("Nodes", nodesTag);
+
+        CompoundNBT skillsTag = new CompoundNBT();
+        for (Map.Entry<String, Integer> entry : skillMilestones.entrySet()) {
+            skillsTag.putInt(entry.getKey(), entry.getValue());
+        }
+        tag.put("SkillMilestones", skillsTag);
         return tag;
     }
 
@@ -135,6 +166,7 @@ public class CosmicSkillData implements ICosmicSkillData {
     public void deserializeNBT(CompoundNBT nbt) {
         this.availablePoints = nbt.getInt("AvailablePoints");
         this.lastRewardedMilestones = nbt.getInt("LastRewardedMilestones");
+
         this.nodeLevels.clear();
         if (nbt.contains("Nodes", 10)) {
             CompoundNBT nodesTag = nbt.getCompound("Nodes");
@@ -142,6 +174,17 @@ public class CosmicSkillData implements ICosmicSkillData {
                 int lvl = nodesTag.getInt(key);
                 if (lvl > 0) {
                     this.nodeLevels.put(key, lvl);
+                }
+            }
+        }
+
+        this.skillMilestones.clear();
+        if (nbt.contains("SkillMilestones", 10)) {
+            CompoundNBT skillsTag = nbt.getCompound("SkillMilestones");
+            for (String key : skillsTag.getAllKeys()) {
+                int m = skillsTag.getInt(key);
+                if (m > 0) {
+                    this.skillMilestones.put(key, m);
                 }
             }
         }

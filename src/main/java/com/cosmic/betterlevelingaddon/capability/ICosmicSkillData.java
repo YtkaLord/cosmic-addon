@@ -10,8 +10,14 @@ public interface ICosmicSkillData {
     void setAvailablePoints(int points);
     void addPoints(int amount);
 
+    int getSpentPoints();
+
     int getLastRewardedMilestones();
     void setLastRewardedMilestones(int milestones);
+
+    int getSkillMilestone(String skillKey);
+    void setSkillMilestone(String skillKey, int milestone);
+    Map<String, Integer> getAllSkillMilestones();
 
     int getNodeLevel(String nodeId);
     void setNodeLevel(String nodeId, int level);

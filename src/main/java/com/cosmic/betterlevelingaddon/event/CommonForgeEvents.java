@@ -39,6 +39,7 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 import java.util.UUID;
 
@@ -65,7 +66,6 @@ public class CommonForgeEvents {
 
     @SubscribeEvent
     public void onPlayerClone(PlayerEvent.Clone event) {
-        // Сохраняем всё космическое дерево и очки навыков при смерти и возвращении из Энда
         event.getOriginal().getCapability(CosmicSkillCapability.COSMIC_SKILL_CAP).ifPresent(oldCap -> {
             event.getPlayer().getCapability(CosmicSkillCapability.COSMIC_SKILL_CAP).ifPresent(newCap -> {
                 newCap.copyFrom(oldCap);
@@ -99,9 +99,9 @@ public class CommonForgeEvents {
     }
 
     /**
-     * Каждые 2 секунды (40 тиков) проверяем уровни всех навыков в моде Better Leveling.
-     * Если игрок прокачал любой навык в Better Leveling до уровня, кратного 5 (5, 10, 15, 20...),
-     * ему автоматически начисляется 1 очко навыков в Космическом Дереве!
+     * Каждую секунду (20 тиков) проверяем уровни всех навыков в Project MMO и Better Leveling.
+     * Как только любой отдельный навык (Рыболовное дело, Бой, Выносливость, Шахтёрство и т.д.)
+     * достигает уровня, кратного 5 (5, 10, 15, 20...), игроку мгновенно выдаётся +1 очко навыков!
      */
     @SubscribeEvent
     public void onPlayerTick(TickEvent.PlayerTickEvent event) {
@@ -109,20 +109,21 @@ public class CommonForgeEvents {
         PlayerEntity player = event.player;
         if (player.level.isClientSide) return;
 
-        // Проверка Better Leveling каждые 40 тиков
-        if (player.tickCount % 40 == 0 && player instanceof ServerPlayerEntity) {
+        if (player.tickCount % 20 == 0 && player instanceof ServerPlayerEntity) {
             ServerPlayerEntity serverPlayer = (ServerPlayerEntity) player;
             syncAndCheckMilestones(serverPlayer, false);
 
             // Пассивная регенерация от навыка "Метаболизм Туманности" (cosmic_regen)
-            player.getCapability(CosmicSkillCapability.COSMIC_SKILL_CAP).ifPresent(cap -> {
-                int regenLvl = cap.getNodeLevel("cosmic_regen");
-                int transLvl = cap.getNodeLevel("cosmic_transcendence");
-                if ((regenLvl > 0 || transLvl > 0) && player.getHealth() < player.getMaxHealth()) {
-                    float healAmount = (float) (regenLvl * 0.08 + transLvl * 0.15);
-                    player.heal(healAmount);
-                }
-            });
+            if (player.tickCount % 40 == 0) {
+                player.getCapability(CosmicSkillCapability.COSMIC_SKILL_CAP).ifPresent(cap -> {
+                    int regenLvl = cap.getNodeLevel("cosmic_regen");
+                    int transLvl = cap.getNodeLevel("cosmic_transcendence");
+                    if ((regenLvl > 0 || transLvl > 0) && player.getHealth() < player.getMaxHealth()) {
+                        float healAmount = (float) (regenLvl * 0.08 + transLvl * 0.15);
+                        player.heal(healAmount);
+                    }
+                });
+            }
         }
 
         // Бонус скорости в воде от навыка "Гидродинамика Кометы" (swim_jet)
@@ -139,19 +140,37 @@ public class CommonForgeEvents {
 
     public static void syncAndCheckMilestones(ServerPlayerEntity player, boolean forceSync) {
         player.getCapability(CosmicSkillCapability.COSMIC_SKILL_CAP).ifPresent(cap -> {
-            BetterLevelingBridge.ScanResult scan = BetterLevelingBridge.scanPlayerBetterLeveling(player);
-            int currentMilestones = scan.totalMilestones;
-            int lastRewarded = cap.getLastRewardedMilestones();
+            Map<String, Integer> currentSkills = BetterLevelingBridge.scanAllSkillLevels(player);
+
+            int newlyEarnedPoints = 0;
+            int totalMilestonesAcrossAllSkills = 0;
+
+            for (Map.Entry<String, Integer> entry : currentSkills.entrySet()) {
+                String skillKey = entry.getKey();
+                int skillLevel = entry.getValue();
+                if (skillLevel <= 0 || skillLevel > 10000) continue;
+
+                // Количество 5-уровневых рубежей этого конкретного навыка (напр., Рыбалка 5.13 -> 5 / 5 = 1)
+                int reachedMilestone = skillLevel / 5;
+                totalMilestonesAcrossAllSkills += reachedMilestone;
+
+                if (reachedMilestone > 0) {
+                    int previouslyRewardedForThisSkill = cap.getSkillMilestone(skillKey);
+                    if (reachedMilestone > previouslyRewardedForThisSkill) {
+                        newlyEarnedPoints += (reachedMilestone - previouslyRewardedForThisSkill);
+                        cap.setSkillMilestone(skillKey, reachedMilestone);
+                    }
+                }
+            }
 
             boolean changed = false;
-            if (currentMilestones > lastRewarded) {
-                int newlyEarned = currentMilestones - lastRewarded;
-                cap.addPoints(newlyEarned);
-                cap.setLastRewardedMilestones(currentMilestones);
+            if (newlyEarnedPoints > 0) {
+                cap.addPoints(newlyEarnedPoints);
+                cap.setLastRewardedMilestones(Math.max(cap.getLastRewardedMilestones() + newlyEarnedPoints, totalMilestonesAcrossAllSkills));
                 changed = true;
 
                 player.displayClientMessage(
-                        new TranslationTextComponent("msg.blcosmicaddon.point_gained", newlyEarned, cap.getAvailablePoints()),
+                        new TranslationTextComponent("msg.blcosmicaddon.point_gained", newlyEarnedPoints, cap.getAvailablePoints()),
                         false
                 );
                 player.level.playSound(null, player.blockPosition(),
@@ -165,16 +184,8 @@ public class CommonForgeEvents {
         });
     }
 
-    /**
-     * Применяет постоянные модификаторы атрибутов:
-     * - Скорость бега (move_speed_root, wind_step, momentum_miner, warp_phantom, nebula_synthesis_left, cosmic_transcendence)
-     * - Максимальное здоровье (vitality_star, nebula_synthesis_left, cosmic_transcendence)
-     * - Скорость атаки (attack_speed_node, cosmic_transcendence)
-     * - Броня (iron_skin_cosmos, cosmic_transcendence)
-     * - Удача (angler_reflex, poseidon_bounty)
-     */
     public static void applyPassiveAttributes(PlayerEntity player, ICosmicSkillData cap) {
-        double transcendencePct = cap.getNodeLevel("cosmic_transcendence") * 0.02; // +2% за уровень финала
+        double transcendencePct = cap.getNodeLevel("cosmic_transcendence") * 0.02;
 
         // 1. Скорость бега (процентный мультипликатор)
         double moveSpeedPct = (cap.getNodeLevel("move_speed_root") * 0.0075)
@@ -227,22 +238,18 @@ public class CommonForgeEvents {
         }
     }
 
-    // =========================================================================
-    // СКОРОСТЬ КОПАНИЯ (BreakSpeed)
-    // =========================================================================
     @SubscribeEvent
     public void onBreakSpeed(PlayerEvent.BreakSpeed event) {
         PlayerEntity player = event.getPlayer();
         player.getCapability(CosmicSkillCapability.COSMIC_SKILL_CAP).ifPresent(cap -> {
-            double bonusPct = (cap.getNodeLevel("mining_speed_root") * 0.015) // +1.5% за ур.
-                    + (cap.getNodeLevel("haste_pulse") * 0.02)                // +2.0% за ур.
-                    + (cap.getNodeLevel("vein_resonance") * 0.03)             // +3.0% за ур.
-                    + (cap.getNodeLevel("tectonic_overlord") * 0.05)          // +5.0% за ур.
-                    + (cap.getNodeLevel("momentum_miner") * 0.01)             // +1.0% за ур.
-                    + (cap.getNodeLevel("nebula_synthesis_left") * 0.02)      // +2.0% за ур.
-                    + (cap.getNodeLevel("cosmic_transcendence") * 0.02);      // +2.0% за ур.
+            double bonusPct = (cap.getNodeLevel("mining_speed_root") * 0.015)
+                    + (cap.getNodeLevel("haste_pulse") * 0.02)
+                    + (cap.getNodeLevel("vein_resonance") * 0.03)
+                    + (cap.getNodeLevel("tectonic_overlord") * 0.05)
+                    + (cap.getNodeLevel("momentum_miner") * 0.01)
+                    + (cap.getNodeLevel("nebula_synthesis_left") * 0.02)
+                    + (cap.getNodeLevel("cosmic_transcendence") * 0.02);
 
-            // Навык "Мастер Глубинных Пластов" (deep_miner) даёт полный бонус ниже Y=45 и половинный выше
             int deepLvl = cap.getNodeLevel("deep_miner");
             if (deepLvl > 0) {
                 if (player.getY() <= 45) {
@@ -258,9 +265,6 @@ public class CommonForgeEvents {
         });
     }
 
-    // =========================================================================
-    // ДОБЫЧА БЛОКОВ И РУД (BlockEvent.BreakEvent)
-    // =========================================================================
     @SubscribeEvent
     public void onBlockBreak(BlockEvent.BreakEvent event) {
         PlayerEntity player = event.getPlayer();
@@ -272,7 +276,6 @@ public class CommonForgeEvents {
         boolean isOre = blockRegName.contains("ore") || state.getHarvestTool() == ToolType.PICKAXE && event.getExpToDrop() > 0;
 
         player.getCapability(CosmicSkillCapability.COSMIC_SKILL_CAP).ifPresent(cap -> {
-            // 1. Бонус опыта за руду (vein_resonance + smelting_mastery)
             int veinLvl = cap.getNodeLevel("vein_resonance");
             int smeltLvl = cap.getNodeLevel("smelting_mastery");
             if (isOre && (veinLvl > 0 || smeltLvl > 0)) {
@@ -281,19 +284,17 @@ public class CommonForgeEvents {
                 event.setExpToDrop(event.getExpToDrop() + extraExp);
             }
 
-            // 2. Шанс сохранить прочность инструмента (unbreaking_spirit)
             int unbreakLvl = cap.getNodeLevel("unbreaking_spirit");
             if (unbreakLvl > 0) {
                 ItemStack held = player.getMainHandItem();
                 if (!held.isEmpty() && held.isDamageableItem() && held.getDamageValue() > 0) {
-                    double saveChance = unbreakLvl * 0.015; // до 30%
+                    double saveChance = unbreakLvl * 0.015;
                     if (random.nextDouble() < saveChance) {
                         held.setDamageValue(Math.max(0, held.getDamageValue() - 1));
                     }
                 }
             }
 
-            // 3. Геолог Звёздных Кристаллов (gem_prospector) — шанс выпадения алмаза/изумруда/кварца из руд или камня
             int gemLvl = cap.getNodeLevel("gem_prospector") + cap.getNodeLevel("tectonic_overlord");
             if (gemLvl > 0 && (isOre || blockRegName.contains("stone"))) {
                 double gemChance = gemLvl * (isOre ? 0.008 : 0.0012);
@@ -306,7 +307,6 @@ public class CommonForgeEvents {
                 }
             }
 
-            // 4. Археолог Древних Миров (treasure_excavator) — клад при копке земли/песка/гравия
             int excavLvl = cap.getNodeLevel("treasure_excavator");
             if (excavLvl > 0 && (state.getHarvestTool() == ToolType.SHOVEL || blockRegName.contains("dirt") || blockRegName.contains("sand") || blockRegName.contains("gravel"))) {
                 if (random.nextDouble() < excavLvl * 0.004 && event.getWorld() instanceof ServerWorld) {
@@ -325,12 +325,8 @@ public class CommonForgeEvents {
         });
     }
 
-    // =========================================================================
-    // УРОН, ПРОЦЕНТНЫЕ БОНУСЫ (+0.5%), КРИТЫ, ВАМПИРИЗМ И ЗАЩИТА (LivingHurtEvent)
-    // =========================================================================
     @SubscribeEvent
     public void onLivingHurt(LivingHurtEvent event) {
-        // А) КОГДА ИГРОК АТАКУЕТ ВРАГА
         Entity sourceEntity = event.getSource().getEntity();
         if (sourceEntity instanceof PlayerEntity) {
             PlayerEntity attacker = (PlayerEntity) sourceEntity;
@@ -339,26 +335,22 @@ public class CommonForgeEvents {
             attacker.getCapability(CosmicSkillCapability.COSMIC_SKILL_CAP).ifPresent(cap -> {
                 float damage = event.getAmount();
 
-                // 1. Процентное повышение общего урона (+0.5% за уровень damage_root и других узлов)
-                double damageBonusPct = (cap.getNodeLevel("damage_root") * 0.005)         // +0.5% за ур.
-                        + (cap.getNodeLevel("heavy_crusher") * 0.006)                     // +0.6% за ур.
-                        + (cap.getNodeLevel("cosmic_warlord") * 0.025)                    // +2.5% за ур.
-                        + (cap.getNodeLevel("nebula_synthesis_right") * 0.015)            // +1.5% за ур.
-                        + (cap.getNodeLevel("abyssal_ascension") * 0.025)                 // +2.5% за ур.
-                        + (cap.getNodeLevel("cosmic_transcendence") * 0.02);              // +2.0% за ур.
+                double damageBonusPct = (cap.getNodeLevel("damage_root") * 0.005)
+                        + (cap.getNodeLevel("heavy_crusher") * 0.006)
+                        + (cap.getNodeLevel("cosmic_warlord") * 0.025)
+                        + (cap.getNodeLevel("nebula_synthesis_right") * 0.015)
+                        + (cap.getNodeLevel("abyssal_ascension") * 0.025)
+                        + (cap.getNodeLevel("cosmic_transcendence") * 0.02);
 
-                // 2. Дальний бой (archery_velocity)
                 if (event.getSource().isProjectile()) {
                     damageBonusPct += cap.getNodeLevel("archery_velocity") * 0.01;
                 }
 
-                // 3. Урон по боссам и элитным мобам (boss_slayer, если макс ХП цели >= 50)
                 int bossLvl = cap.getNodeLevel("boss_slayer");
                 if (bossLvl > 0 && target != null && target.getMaxHealth() >= 50.0F) {
                     damageBonusPct += bossLvl * 0.0125;
                 }
 
-                // 4. Приговор Палача (executioner_strike, если у цели < 35% ХП)
                 int execLvl = cap.getNodeLevel("executioner_strike");
                 if (execLvl > 0 && target != null && (target.getHealth() / target.getMaxHealth()) <= 0.35F) {
                     damageBonusPct += execLvl * 0.02;
@@ -366,8 +358,7 @@ public class CommonForgeEvents {
 
                 damage *= (float) (1.0 + damageBonusPct);
 
-                // 5. Критический удар (crit_chance_node + crit_damage_node + meteor_forged_blade)
-                double critChance = (cap.getNodeLevel("crit_chance_node") * 0.008)        // +0.8% за ур.
+                double critChance = (cap.getNodeLevel("crit_chance_node") * 0.008)
                         + (cap.getNodeLevel("cosmic_warlord") * 0.015)
                         + (cap.getNodeLevel("cosmic_transcendence") * 0.01);
 
@@ -387,13 +378,11 @@ public class CommonForgeEvents {
                     }
                 }
 
-                // 6. Метеоритная Закалка Оружия (meteor_forged_blade) — поджог цели
                 int meteorLvl = cap.getNodeLevel("meteor_forged_blade");
                 if (meteorLvl > 0 && target != null && random.nextDouble() < meteorLvl * 0.04) {
                     target.setSecondsOnFire(3 + meteorLvl / 3);
                 }
 
-                // 7. Пробитие брони (armor_penetration) — добавляет чистый бонус сквозь броню
                 int penLvl = cap.getNodeLevel("armor_penetration");
                 if (penLvl > 0 && target != null && target.getArmorValue() > 0) {
                     damage *= (float) (1.0 + penLvl * 0.01);
@@ -401,7 +390,6 @@ public class CommonForgeEvents {
 
                 event.setAmount(damage);
 
-                // 8. Вампиризм Чёрной Дыры (lifesteal_fang)
                 double lifestealPct = (cap.getNodeLevel("lifesteal_fang") * 0.0035)
                         + (cap.getNodeLevel("cosmic_warlord") * 0.005);
                 if (lifestealPct > 0 && damage > 0) {
@@ -413,13 +401,11 @@ public class CommonForgeEvents {
             });
         }
 
-        // Б) КОГДА ИГРОК ПОЛУЧАЕТ УРОН (Защита, Уклонение, Второе дыхание)
         if (event.getEntityLiving() instanceof PlayerEntity) {
             PlayerEntity defender = (PlayerEntity) event.getEntityLiving();
             defender.getCapability(CosmicSkillCapability.COSMIC_SKILL_CAP).ifPresent(cap -> {
                 DamageSource src = event.getSource();
 
-                // 1. Матрица Уклонения (evasion_matrix + warp_phantom)
                 if (!src.isBypassInvul()) {
                     double dodgeChance = (cap.getNodeLevel("evasion_matrix") * 0.0075)
                             + (cap.getNodeLevel("warp_phantom") * 0.02);
@@ -431,15 +417,12 @@ public class CommonForgeEvents {
                     }
                 }
 
-                // 2. Снижение физического урона (stone_warden)
                 double damageReduction = cap.getNodeLevel("stone_warden") * 0.008;
 
-                // 3. Снижение урона от огня, лавы и магии (Astral_strider_hybrid)
                 if (src.isFire() || src.isMagic()) {
                     damageReduction += cap.getNodeLevel("Astral_strider_hybrid") * 0.02;
                 }
 
-                // 4. Второе дыхание Пустоты (second_wind) при ХП < 35%
                 int secondWindLvl = cap.getNodeLevel("second_wind");
                 if (secondWindLvl > 0 && (defender.getHealth() / defender.getMaxHealth()) <= 0.35F) {
                     damageReduction += secondWindLvl * 0.03;
@@ -455,9 +438,6 @@ public class CommonForgeEvents {
         }
     }
 
-    // =========================================================================
-    // СНИЖЕНИЕ УРОНА ОТ ПАДЕНИЯ (feather_gravity)
-    // =========================================================================
     @SubscribeEvent
     public void onLivingFall(LivingFallEvent event) {
         if (event.getEntityLiving() instanceof PlayerEntity) {
@@ -472,9 +452,6 @@ public class CommonForgeEvents {
         }
     }
 
-    // =========================================================================
-    // ПОВЫШЕНИЕ ШАНСА ДРОПА С МОБОВ И РЕДКИЕ ТРОФЕИ (LivingDropsEvent)
-    // =========================================================================
     @SubscribeEvent
     public void onLivingDrops(LivingDropsEvent event) {
         Entity killer = event.getSource().getEntity();
@@ -483,7 +460,6 @@ public class CommonForgeEvents {
         if (player.level.isClientSide) return;
 
         player.getCapability(CosmicSkillCapability.COSMIC_SKILL_CAP).ifPresent(cap -> {
-            // 1. Ловец Трофеев (mob_loot_chance + poseidon_bounty + abyssal_ascension) — шанс удвоить каждый предмет дропа
             double doubleDropChance = (cap.getNodeLevel("mob_loot_chance") * 0.012)
                     + (cap.getNodeLevel("poseidon_bounty") * 0.04)
                     + (cap.getNodeLevel("abyssal_ascension") * 0.025)
@@ -493,7 +469,6 @@ public class CommonForgeEvents {
                 List<ItemEntity> extraDrops = new ArrayList<>();
                 for (ItemEntity itemEntity : event.getDrops()) {
                     ItemStack stack = itemEntity.getItem();
-                    // Удваиваем стакающиеся ресурсы/лут с мобов (не дублируем уникальную броню с maxStackSize == 1)
                     if (stack.getMaxStackSize() > 1 && random.nextDouble() < doubleDropChance) {
                         ItemStack copy = stack.copy();
                         if (doubleDropChance > 1.0 && random.nextDouble() < (doubleDropChance - 1.0)) {
@@ -509,7 +484,6 @@ public class CommonForgeEvents {
                 event.getDrops().addAll(extraDrops);
             }
 
-            // 2. Инкассатор Реликвий (rare_mob_trophy) — шанс редкого трофея с мобов
             int trophyLvl = cap.getNodeLevel("rare_mob_trophy") + cap.getNodeLevel("poseidon_bounty");
             if (trophyLvl > 0 && random.nextDouble() < trophyLvl * 0.006) {
                 LivingEntity victim = event.getEntityLiving();
@@ -526,9 +500,6 @@ public class CommonForgeEvents {
         });
     }
 
-    // =========================================================================
-    // УВЕЛИЧЕНИЕ ОПЫТА С МОБОВ (hunter_xp_boost)
-    // =========================================================================
     @SubscribeEvent
     public void onLivingXpDrop(LivingExperienceDropEvent event) {
         PlayerEntity player = event.getAttackingPlayer();
@@ -544,20 +515,20 @@ public class CommonForgeEvents {
         });
     }
 
-    // =========================================================================
-    // РЫБАЛКА: БОЛЬШЕ КРЮЧКОВ НА ЛЕСКЕ И МОРСКИЕ СОКРОВИЩА (ItemFishedEvent)
-    // =========================================================================
     @SubscribeEvent
     public void onItemFished(ItemFishedEvent event) {
         PlayerEntity player = event.getPlayer();
         if (player == null || player.level.isClientSide) return;
 
+        // Сразу после улова проверяем, не апнул ли игрок 5 уровень Рыболовного дела
+        if (player instanceof ServerPlayerEntity) {
+            syncAndCheckMilestones((ServerPlayerEntity) player, false);
+        }
+
         player.getCapability(CosmicSkillCapability.COSMIC_SKILL_CAP).ifPresent(cap -> {
-            // 1. Многокрючковая Снасть (multi_hook_fishing + poseidon_bounty + abyssal_ascension)
-            // Каждый дополнительный крючок даёт шанс вытянуть +1, +2 или +3 дополнительных улова за один раз!
-            double multiHookChance = (cap.getNodeLevel("multi_hook_fishing") * 0.05) // до 75%
-                    + (cap.getNodeLevel("poseidon_bounty") * 0.04)                   // +40%
-                    + (cap.getNodeLevel("abyssal_ascension") * 0.025)                // +25%
+            double multiHookChance = (cap.getNodeLevel("multi_hook_fishing") * 0.05)
+                    + (cap.getNodeLevel("poseidon_bounty") * 0.04)
+                    + (cap.getNodeLevel("abyssal_ascension") * 0.025)
                     + (cap.getNodeLevel("cosmic_transcendence") * 0.02);
 
             if (multiHookChance > 0 && !event.getDrops().isEmpty() && player.level instanceof ServerWorld) {
@@ -576,7 +547,6 @@ public class CommonForgeEvents {
                 }
             }
 
-            // 2. Искатель Сокровищ Океана (abyssal_treasure_fisher)
             int treasureLvl = cap.getNodeLevel("abyssal_treasure_fisher") + cap.getNodeLevel("poseidon_bounty");
             if (treasureLvl > 0 && random.nextDouble() < treasureLvl * 0.008 && player.level instanceof ServerWorld) {
                 ServerWorld sw = (ServerWorld) player.level;
@@ -593,7 +563,6 @@ public class CommonForgeEvents {
                 spawnItemTowardsPlayer(sw, player, bonusTreasure);
             }
 
-            // 3. Дополнительный опыт рыбалки (angler_reflex)
             int anglerLvl = cap.getNodeLevel("angler_reflex");
             if (anglerLvl > 0 && player.level instanceof ServerWorld) {
                 int bonusXp = 1 + (anglerLvl / 3);

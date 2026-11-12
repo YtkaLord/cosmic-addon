@@ -1,5 +1,6 @@
 package com.cosmic.betterlevelingaddon.compat;
 
+import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.entity.player.ServerPlayerEntity;
 import net.minecraft.nbt.CompoundNBT;
 import net.minecraft.nbt.INBT;
@@ -8,39 +9,133 @@ import net.minecraftforge.common.capabilities.Capability;
 import net.minecraftforge.common.capabilities.CapabilityManager;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.Map;
 
 /**
- * Мост интеграции с модом Better Leveling (1.16.5).
- * Сканирует все уровни навыков игрока из Better Leveling (как через Forge Capability Dispatcher /
- * внутренний реестр CapabilityManager, так и через PersistentData игрока).
+ * Мост интеграции с модами на прокачку навыков:
+ * 1) Project MMO (PMMO 1.16.5) — именно этот мод показывает полоску "Рыболовное дело 5.13", "Бой", "Выносливость" и т.д.
+ * 2) Better Leveling (Darkorg69 1.16.5) — специализации и навыки в ForgeCaps.
  *
- * Правило начисления:
- * За каждые 5 уровней ЛЮБОГО навыка в Better Leveling (например, боевой навык достиг 5, 10, 15 ур.,
- * или шахтёрский достиг 5 ур.) начисляется +1 очко навыков для Космического Дерева:
- * milestones = sum( skillLevel / 5 ).
+ * Возвращает карту: [Идентификатор навыка -> Текущий уровень навыка].
+ * Как только любой навык (Рыбалка, Бой, Выносливость, Шахтёрство и т.д.) достигает уровня 5, 10, 15, 20...,
+ * игроку начисляется очко навыков для Космического Дерева!
  */
 public class BetterLevelingBridge {
 
     private static Field providersFieldCached = null;
-    private static boolean reflectionFailed = false;
+    private static boolean capReflectionFailed = false;
 
-    public static class ScanResult {
-        public final int totalMilestones; // Сумма (level / 5) по всем навыкам Better Leveling
-        public final int totalLevels;     // Сумма всех уровней в Better Leveling
+    // Кэш рефлексии для Project MMO (PMMO)
+    private static boolean pmmoChecked = false;
+    private static boolean pmmoPresent = false;
+    private static Method pmmoGetXpMapMethod = null;
+    private static Method pmmoLevelAtXpDecimalMethod = null;
+    private static Method pmmoLevelAtXpIntMethod = null;
+    private static Method pmmoSkillGetLevelMethod = null;
 
-        public ScanResult(int totalMilestones, int totalLevels) {
-            this.totalMilestones = totalMilestones;
-            this.totalLevels = totalLevels;
+    public static Map<String, Integer> scanAllSkillLevels(ServerPlayerEntity player) {
+        Map<String, Integer> discoveredSkills = new HashMap<>();
+
+        // =========================================================================
+        // 1. ПРЯМАЯ ИНТЕГРАЦИЯ С PROJECT MMO (PMMO 1.16.5: "Рыболовное дело 5.13", "Бой", "Выносливость" и др.)
+        // =========================================================================
+        scanProjectMmoSkills(player, discoveredSkills);
+
+        // =========================================================================
+        // 2. ИНТЕГРАЦИЯ С BETTER LEVELING (ForgeCaps и CapabilityManager)
+        // =========================================================================
+        scanBetterLevelingCapabilities(player, discoveredSkills);
+
+        return discoveredSkills;
+    }
+
+    private static void initPmmoReflection() {
+        if (pmmoChecked) return;
+        pmmoChecked = true;
+        try {
+            Class<?> configClass = Class.forName("harmonised.pmmo.config.Config");
+            pmmoGetXpMapMethod = configClass.getMethod("getXpMap", PlayerEntity.class);
+
+            Class<?> xpClass = Class.forName("harmonised.pmmo.util.XP");
+            try {
+                pmmoLevelAtXpDecimalMethod = xpClass.getMethod("levelAtXpDecimal", double.class);
+            } catch (NoSuchMethodException ignored) {
+            }
+            try {
+                pmmoLevelAtXpIntMethod = xpClass.getMethod("levelAtXp", double.class);
+            } catch (NoSuchMethodException ignored) {
+            }
+
+            try {
+                Class<?> skillClass = Class.forName("harmonised.pmmo.skills.Skill");
+                pmmoSkillGetLevelMethod = skillClass.getMethod("getLevel", String.class, PlayerEntity.class);
+            } catch (Exception ignored) {
+            }
+
+            pmmoPresent = true;
+        } catch (ClassNotFoundException e) {
+            pmmoPresent = false;
+        } catch (Exception e) {
+            pmmoPresent = false;
         }
     }
 
-    public static ScanResult scanPlayerBetterLeveling(ServerPlayerEntity player) {
-        Map<String, Integer> discoveredSkills = new HashMap<>();
+    @SuppressWarnings("unchecked")
+    private static void scanProjectMmoSkills(ServerPlayerEntity player, Map<String, Integer> outSkills) {
+        initPmmoReflection();
+        if (!pmmoPresent) return;
 
-        // 1. Сканируем полный сериализованный снимок сущности игрока (включает ForgeCaps всех модов, включая betterleveling)
+        try {
+            if (pmmoGetXpMapMethod != null) {
+                Object rawMap = pmmoGetXpMapMethod.invoke(null, player);
+                if (rawMap instanceof Map) {
+                    Map<String, ?> xpMap = (Map<String, ?>) rawMap;
+                    for (Map.Entry<String, ?> entry : xpMap.entrySet()) {
+                        String skillName = entry.getKey();
+                        Object xpValObj = entry.getValue();
+                        if (skillName == null || xpValObj == null) continue;
+
+                        int level = 0;
+                        if (pmmoSkillGetLevelMethod != null) {
+                            try {
+                                Object lvlObj = pmmoSkillGetLevelMethod.invoke(null, skillName, player);
+                                if (lvlObj instanceof Number) {
+                                    level = ((Number) lvlObj).intValue();
+                                }
+                            } catch (Exception ignored) {
+                            }
+                        }
+
+                        if (level <= 0 && xpValObj instanceof Number) {
+                            double xp = ((Number) xpValObj).doubleValue();
+                            if (pmmoLevelAtXpDecimalMethod != null) {
+                                Object decLvl = pmmoLevelAtXpDecimalMethod.invoke(null, xp);
+                                if (decLvl instanceof Number) {
+                                    level = (int) Math.floor(((Number) decLvl).doubleValue());
+                                }
+                            } else if (pmmoLevelAtXpIntMethod != null) {
+                                Object intLvl = pmmoLevelAtXpIntMethod.invoke(null, xp);
+                                if (intLvl instanceof Number) {
+                                    level = ((Number) intLvl).intValue();
+                                }
+                            }
+                        }
+
+                        if (level > 0) {
+                            recordMaxLevel(outSkills, "pmmo:" + skillName.toLowerCase(), level);
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static void scanBetterLevelingCapabilities(ServerPlayerEntity player, Map<String, Integer> discoveredSkills) {
+        // А) Читаем ForgeCaps игрока через сериализацию сущности
         try {
             CompoundNBT fullPlayerTag = new CompoundNBT();
             player.saveWithoutId(fullPlayerTag);
@@ -49,34 +144,20 @@ public class BetterLevelingBridge {
                 CompoundNBT forgeCaps = fullPlayerTag.getCompound("ForgeCaps");
                 for (String capKey : forgeCaps.getAllKeys()) {
                     String lowerKey = capKey.toLowerCase();
-                    // Игнорируем наш собственный capability, ищем betterleveling / skill / level / darkorg
                     if (lowerKey.contains("blcosmicaddon")) continue;
+                    // Читаем только capabilities модов Better Leveling / Leveling / Reskillable
                     if (lowerKey.contains("betterleveling") || lowerKey.contains("better_leveling")
-                            || lowerKey.contains("darkorg") || lowerKey.contains("skill") || lowerKey.contains("level")) {
+                            || lowerKey.contains("darkorg") || lowerKey.contains("skill") || lowerKey.contains("leveling")) {
                         INBT capData = forgeCaps.get(capKey);
-                        extractSkillLevelsRecursive(capKey, capData, discoveredSkills, 0);
+                        extractSkillLevelsRecursive("bl:" + capKey, capData, discoveredSkills, 0);
                     }
                 }
             }
         } catch (Exception ignored) {
         }
 
-        // 2. Дополнительно проверяем PersistentData игрока (на случай хранения в PlayerPersisted)
-        try {
-            CompoundNBT persistent = player.getPersistentData();
-            for (String key : persistent.getAllKeys()) {
-                String lower = key.toLowerCase();
-                if (lower.contains("blcosmicaddon")) continue;
-                if (lower.contains("betterleveling") || lower.contains("better_leveling")
-                        || lower.contains("skill") || lower.contains("playerpersisted")) {
-                    extractSkillLevelsRecursive(key, persistent.get(key), discoveredSkills, 0);
-                }
-            }
-        } catch (Exception ignored) {
-        }
-
-        // 3. Дополнительно опрашиваем зарегистрированные в CapabilityManager провайдеры с пакетами betterleveling
-        if (!reflectionFailed) {
+        // Б) Дополнительно проверяем CapabilityManager на провайдеры betterleveling / darkorg
+        if (!capReflectionFailed) {
             try {
                 if (providersFieldCached == null) {
                     providersFieldCached = CapabilityManager.class.getDeclaredField("providers");
@@ -88,13 +169,14 @@ public class BetterLevelingBridge {
                 if (providers != null) {
                     for (Map.Entry<String, Capability<?>> entry : providers.entrySet()) {
                         String name = entry.getKey().toLowerCase();
+                        if (name.contains("blcosmicaddon")) continue;
                         if (name.contains("betterleveling") || name.contains("darkorg")) {
                             Capability<?> cap = entry.getValue();
                             player.getCapability(cap).ifPresent(inst -> {
                                 try {
                                     INBT nbt = writeCapabilitySafe(cap, inst);
                                     if (nbt != null) {
-                                        extractSkillLevelsRecursive(name, nbt, discoveredSkills, 0);
+                                        extractSkillLevelsRecursive("blcap:" + name, nbt, discoveredSkills, 0);
                                     }
                                 } catch (Exception ignored2) {
                                 }
@@ -103,21 +185,9 @@ public class BetterLevelingBridge {
                     }
                 }
             } catch (Exception e) {
-                reflectionFailed = true;
+                capReflectionFailed = true;
             }
         }
-
-        int totalMilestones = 0;
-        int totalLevels = 0;
-        for (Map.Entry<String, Integer> entry : discoveredSkills.entrySet()) {
-            int lvl = entry.getValue();
-            if (lvl > 0 && lvl <= 10000) {
-                totalLevels += lvl;
-                totalMilestones += (lvl / 5);
-            }
-        }
-
-        return new ScanResult(totalMilestones, totalLevels);
     }
 
     @SuppressWarnings("unchecked")
@@ -131,14 +201,13 @@ public class BetterLevelingBridge {
         if (nbt instanceof CompoundNBT) {
             CompoundNBT compound = (CompoundNBT) nbt;
 
-            // Если это структура одного навыка вида { "Name"/"Id": "...", "Level"/"level": X }
             if ((compound.contains("Level", 99) || compound.contains("level", 99))
                     && (compound.contains("Name", 8) || compound.contains("name", 8) || compound.contains("Id", 8) || compound.contains("id", 8))) {
                 String id = compound.contains("Id", 8) ? compound.getString("Id")
                         : (compound.contains("id", 8) ? compound.getString("id")
                         : (compound.contains("Name", 8) ? compound.getString("Name") : compound.getString("name")));
                 int lvl = compound.contains("Level", 99) ? compound.getInt("Level") : compound.getInt("level");
-                recordMaxLevel(outSkills, id, lvl);
+                recordMaxLevel(outSkills, "blskill:" + id.toLowerCase(), lvl);
                 return;
             }
 
@@ -146,18 +215,23 @@ public class BetterLevelingBridge {
                 INBT child = compound.get(key);
                 String lowerKey = key.toLowerCase();
 
-                // Пропускаем поля опыта (xp, experience, cost), нас интересуют только целочисленные уровни навыков
                 if (lowerKey.contains("xp") || lowerKey.contains("exp") || lowerKey.contains("point")
-                        || lowerKey.contains("cost") || lowerKey.contains("unlocked") || lowerKey.contains("choice")) {
+                        || lowerKey.contains("cost") || lowerKey.contains("unlocked") || lowerKey.contains("choice")
+                        || lowerKey.contains("spec") || lowerKey.contains("uuid") || lowerKey.contains("time")) {
                     continue;
                 }
 
                 if (child != null && (child.getId() == 3 || child.getId() == 2 || child.getId() == 1)) {
-                    // IntNBT (3), ShortNBT (2), ByteNBT (1)
                     int val = compound.getInt(key);
                     if (val > 0 && val <= 1000) {
                         String skillKey = (lowerKey.equals("level") || lowerKey.equals("lvl")) ? path : (path + "." + key);
-                        recordMaxLevel(outSkills, skillKey, val);
+                        recordMaxLevel(outSkills, skillKey.toLowerCase(), val);
+                    }
+                } else if (child != null && (child.getId() == 5 || child.getId() == 6)) {
+                    // FloatNBT (5) или DoubleNBT (6) — если уровень хранится дробным числом (например, 5.13)
+                    double dVal = compound.getDouble(key);
+                    if (dVal >= 1.0 && dVal <= 1000.0 && (lowerKey.contains("level") || lowerKey.contains("lvl"))) {
+                        recordMaxLevel(outSkills, (path + "." + key).toLowerCase(), (int) Math.floor(dVal));
                     }
                 } else {
                     extractSkillLevelsRecursive(path + "." + key, child, outSkills, depth + 1);

@@ -35,9 +35,10 @@ import java.util.Random;
 
 /**
  * Полноэкранное голубое космическое дерево навыков (открывается по F7).
- * Совместимо с Minecraft Forge 1.16.5 (36.2.39) и LWJGL 3.2.2.
- * Поддерживает панорамирование мышью, масштабирование колесиком, анимацию параллакс-космоса,
- * линии созвездий, иконки предметов и подробные тултипы с процентными бонусами.
+ * - Переливающийся космический фон с медленно пульсирующим центром.
+ * - Яркие видимые энергетические линии между всеми улучшениями (с отключением CULL_FACE).
+ * - Отображение "Использованное очков навыков: X" справа сверху.
+ * - Без нижней панели подсказок.
  */
 public class CosmicSkillTreeScreen extends Screen {
 
@@ -68,14 +69,15 @@ public class CosmicSkillTreeScreen extends Screen {
     }
 
     private static class NebulaCloud {
-        final float x, y, width, height;
+        final float x, y, width, height, phase;
         final int topColor, bottomColor;
 
-        NebulaCloud(float x, float y, float width, float height, int topColor, int bottomColor) {
+        NebulaCloud(float x, float y, float width, float height, float phase, int topColor, int bottomColor) {
             this.x = x;
             this.y = y;
             this.width = width;
             this.height = height;
+            this.phase = phase;
             this.topColor = topColor;
             this.bottomColor = bottomColor;
         }
@@ -98,7 +100,7 @@ public class CosmicSkillTreeScreen extends Screen {
                 0xFFFFF59D  // Далёкий золотистый гигант
         };
 
-        for (int i = 0; i < 320; i++) {
+        for (int i = 0; i < 340; i++) {
             float sx = (rng.nextFloat() - 0.5F) * 2600.0F;
             float sy = (rng.nextFloat() - 0.5F) * 2200.0F;
             float size = 1.0F + rng.nextFloat() * 2.2F;
@@ -109,15 +111,16 @@ public class CosmicSkillTreeScreen extends Screen {
         }
 
         nebulae.clear();
-        int[] nebulaColorsTop = new int[]{0x2800B0FF, 0x2400E5FF, 0x223D5AFE, 0x2018FFFF};
-        int[] nebulaColorsBot = new int[]{0x05002244, 0x05004466, 0x05051535, 0x05003355};
-        for (int i = 0; i < 18; i++) {
+        int[] nebulaColorsTop = new int[]{0x2E00B0FF, 0x2800E5FF, 0x263D5AFE, 0x2418FFFF};
+        int[] nebulaColorsBot = new int[]{0x08002244, 0x08004466, 0x08051535, 0x08003355};
+        for (int i = 0; i < 20; i++) {
             float nx = (rng.nextFloat() - 0.5F) * 1800.0F;
             float ny = (rng.nextFloat() - 0.5F) * 1600.0F;
-            float nw = 180.0F + rng.nextFloat() * 260.0F;
-            float nh = 120.0F + rng.nextFloat() * 200.0F;
+            float nw = 180.0F + rng.nextFloat() * 280.0F;
+            float nh = 120.0F + rng.nextFloat() * 220.0F;
+            float phase = rng.nextFloat() * 6.28F;
             int idx = rng.nextInt(nebulaColorsTop.length);
-            nebulae.add(new NebulaCloud(nx, ny, nw, nh, nebulaColorsTop[idx], nebulaColorsBot[idx]));
+            nebulae.add(new NebulaCloud(nx, ny, nw, nh, phase, nebulaColorsTop[idx], nebulaColorsBot[idx]));
         }
     }
 
@@ -142,8 +145,10 @@ public class CosmicSkillTreeScreen extends Screen {
 
     @Override
     public void render(MatrixStack matrixStack, int mouseX, int mouseY, float partialTicks) {
-        // 1. Отрисовка глубокого голубого космического фона
-        renderBlueCosmicBackground(matrixStack, partialTicks);
+        float animTime = (System.currentTimeMillis() % 1000000L) / 1000.0F;
+
+        // 1. Отрисовка плавно переливающегося голубого космического фона
+        renderShimmeringCosmicBackground(matrixStack, animTime);
 
         ICosmicSkillData skillData = ClientSkillCache.get();
         int centerX = this.width / 2;
@@ -156,13 +161,13 @@ public class CosmicSkillTreeScreen extends Screen {
 
         MatrixStack canvasStack = new MatrixStack();
 
-        // Отрисовка центрального ядра космоса в (0, 0)
-        drawCentralCoreOrb(canvasStack);
+        // 3. Отрисовка соединительных линий между всеми улучшениями (рисуем до узлов, чтобы линии шли от центра к центру)
+        renderConstellationConnections(canvasStack, skillData, animTime);
 
-        // 3. Отрисовка соединительных линий созвездий между родительскими и дочерними навыками
-        renderConstellationConnections(canvasStack, skillData);
+        // 4. Отрисовка медленно пульсирующего центрального ядра космоса в (0, 0)
+        drawPulsingCentralCoreOrb(canvasStack, animTime);
 
-        // 4. Отрисовка всех узлов дерева навыков
+        // 5. Отрисовка всех узлов дерева навыков
         SkillNode hoveredNode = null;
         double worldMouseX = (mouseX - centerX - panX) / zoom;
         double worldMouseY = (mouseY - centerY - panY) / zoom;
@@ -180,10 +185,10 @@ public class CosmicSkillTreeScreen extends Screen {
 
         RenderSystem.popMatrix();
 
-        // 5. Отрисовка верхней и нижней информационной панели (HUD)
+        // 6. Отрисовка верхней информационной панели (без нижней подсказки)
         renderCosmicHudOverlay(matrixStack, skillData);
 
-        // 6. Отрисовка подробного всплывающего окна (Tooltip) при наведении на навык
+        // 7. Отрисовка всплывающего описания навыка (Tooltip) при наведении
         if (hoveredNode != null) {
             renderSkillNodeTooltip(matrixStack, hoveredNode, skillData, mouseX, mouseY);
         }
@@ -191,26 +196,56 @@ public class CosmicSkillTreeScreen extends Screen {
         super.render(matrixStack, mouseX, mouseY, partialTicks);
     }
 
-    private void renderBlueCosmicBackground(MatrixStack matrixStack, float partialTicks) {
-        // Глубокий космический сине-голубой градиент
-        this.fillGradient(matrixStack, 0, 0, this.width, this.height, 0xFF030B1E, 0xFF0A274E);
-        // Дополнительное голубое свечение в нижней половине экрана
-        this.fillGradient(matrixStack, 0, this.height / 3, this.width, this.height, 0x00004488, 0x550088CC);
+    private void renderShimmeringCosmicBackground(MatrixStack matrixStack, float animTime) {
+        // Плавное переливание верхнего и нижнего оттенков космоса
+        float wave1 = 0.5F + 0.5F * MathHelper.sin(animTime * 0.7F);
+        float wave2 = 0.5F + 0.5F * MathHelper.cos(animTime * 0.55F);
 
-        float time = (Minecraft.getInstance().player != null ? Minecraft.getInstance().player.tickCount : 0) + partialTicks;
+        int topR = (int) MathHelper.lerp(wave1, 2, 10);
+        int topG = (int) MathHelper.lerp(wave1, 10, 28);
+        int topB = (int) MathHelper.lerp(wave1, 28, 62);
+        int topColor = (0xFF << 24) | (topR << 16) | (topG << 8) | topB;
+
+        int botR = (int) MathHelper.lerp(wave2, 6, 18);
+        int botG = (int) MathHelper.lerp(wave2, 34, 72);
+        int botB = (int) MathHelper.lerp(wave2, 68, 128);
+        int botColor = (0xFF << 24) | (botR << 16) | (botG << 8) | botB;
+
+        this.fillGradient(matrixStack, 0, 0, this.width, this.height, topColor, botColor);
+
+        // Переливающееся лазурное свечение по диагонали/центру
+        int shimmerAlpha = (int) (35 + 30 * MathHelper.sin(animTime * 0.9F));
+        int shimmerColor = (shimmerAlpha << 24) | 0x00A8FF;
+        this.fillGradient(matrixStack, 0, this.height / 4, this.width, this.height, 0x00004488, shimmerColor);
+
         float parallaxX = (float) (this.width / 2.0 + panX * 0.25);
         float parallaxY = (float) (this.height / 2.0 + panY * 0.25);
 
-        // Туманности (Nebula Clouds)
+        // Дышащие космические туманности
         for (NebulaCloud cloud : nebulae) {
             int x1 = (int) (parallaxX + cloud.x - cloud.width / 2);
             int y1 = (int) (parallaxY + cloud.y - cloud.height / 2);
             int x2 = (int) (x1 + cloud.width);
             int y2 = (int) (y1 + cloud.height);
             if (x2 >= 0 && x1 <= this.width && y2 >= 0 && y1 <= this.height) {
-                this.fillGradient(matrixStack, x1, y1, x2, y2, cloud.topColor, cloud.bottomColor);
+                float pulse = 0.65F + 0.35F * MathHelper.sin(animTime * 0.6F + cloud.phase);
+                int baseAlpha = (cloud.topColor >>> 24) & 0xFF;
+                int dynAlpha = MathHelper.clamp((int) (baseAlpha * pulse), 8, 90);
+                int dynTop = (dynAlpha << 24) | (cloud.topColor & 0x00FFFFFF);
+                this.fillGradient(matrixStack, x1, y1, x2, y2, dynTop, cloud.bottomColor);
             }
         }
+
+        // Нежное пульсирующее свечение вокруг середины экрана (фона)
+        int centerScreenX = (int) (this.width / 2.0 + panX);
+        int centerScreenY = (int) (this.height / 2.0 + panY);
+        float slowPulse = 0.5F + 0.5F * MathHelper.sin(animTime * 1.15F);
+        int haloRadius = (int) ((75 + 22 * slowPulse) * zoom);
+        int haloAlpha = (int) (22 + 20 * slowPulse);
+        this.fillGradient(matrixStack,
+                centerScreenX - haloRadius, centerScreenY - haloRadius,
+                centerScreenX + haloRadius, centerScreenY + haloRadius,
+                (haloAlpha << 24) | 0x00E5FF, 0x00005599);
 
         // Мерцающие звёзды
         float starParallaxX = (float) (this.width / 2.0 + panX * 0.45);
@@ -220,8 +255,8 @@ public class CosmicSkillTreeScreen extends Screen {
             int sy = (int) (starParallaxY + star.y);
             if (sx < -5 || sx > this.width + 5 || sy < -5 || sy > this.height + 5) continue;
 
-            float twinkle = 0.55F + 0.45F * MathHelper.sin(time * star.speed + star.phase);
-            int alpha = MathHelper.clamp((int) (twinkle * 255.0F), 40, 255);
+            float twinkle = 0.50F + 0.50F * MathHelper.sin(animTime * (star.speed * 20.0F) + star.phase);
+            int alpha = MathHelper.clamp((int) (twinkle * 255.0F), 45, 255);
             int rgb = star.color & 0x00FFFFFF;
             int colorWithAlpha = (alpha << 24) | rgb;
 
@@ -230,24 +265,39 @@ public class CosmicSkillTreeScreen extends Screen {
         }
     }
 
-    private void drawCentralCoreOrb(MatrixStack stack) {
-        // Светящееся ядро в центре (0,0), от которого расходятся первые 3 навыка
-        fill(stack, -26, -26, 26, 26, 0x3300E5FF);
-        fill(stack, -18, -18, 18, 18, 0x8800B0FF);
-        fill(stack, -11, -11, 11, 11, 0xFF00E5FF);
-        fill(stack, -6, -6, 6, 6, 0xFFFFFFFF);
+    private void drawPulsingCentralCoreOrb(MatrixStack stack, float animTime) {
+        // Небыстрая плавная пульсация центрального ядра космоса в (0, 0)
+        float pulse = 0.5F + 0.5F * MathHelper.sin(animTime * 1.4F);
 
-        // Линии от центрального ядра к 3 стартовым навыкам
+        int outerR = (int) (28 + 8 * pulse);
+        int midR = (int) (20 + 5 * pulse);
+        int innerR = (int) (12 + 3 * pulse);
+        int coreR = (int) (6 + 2 * pulse);
+
+        int outerAlpha = (int) (45 + 35 * pulse);
+        int midAlpha = (int) (110 + 50 * pulse);
+
+        fill(stack, -outerR, -outerR, outerR, outerR, (outerAlpha << 24) | 0x00E5FF);
+        fill(stack, -midR, -midR, midR, midR, (midAlpha << 24) | 0x00B0FF);
+        fill(stack, -innerR, -innerR, innerR, innerR, 0xEE00E5FF);
+        fill(stack, -coreR, -coreR, coreR, coreR, 0xFFFFFFFF);
+    }
+
+    private void renderConstellationConnections(MatrixStack stack, ICosmicSkillData data, float animTime) {
+        float linePulse = 0.75F + 0.25F * MathHelper.sin(animTime * 2.0F);
+
+        // 1. Линии от центрального ядра (0,0) к первым трём стартовым навыкам
         String[] roots = new String[]{"mining_speed_root", "move_speed_root", "damage_root"};
         for (String rootId : roots) {
             SkillNode root = SkillTreeRegistry.getNode(rootId);
             if (root != null) {
-                drawSmoothLine(stack, 0, 0, root.getX(), root.getY(), 2.5F, 0xAA00E5FF);
+                int lvl = data.getNodeLevel(rootId);
+                int rootLineCol = lvl > 0 ? 0xFF00E5FF : 0xCC29B6F6;
+                drawConnectionLine(stack, 0, 0, root.getX(), root.getY(), 3.6F, rootLineCol);
             }
         }
-    }
 
-    private void renderConstellationConnections(MatrixStack stack, ICosmicSkillData data) {
+        // 2. Линии между всеми родительскими и следующими навыками в ветках
         for (SkillNode node : SkillTreeRegistry.getAllNodes()) {
             int nodeLvl = data.getNodeLevel(node.getId());
             boolean nodeUnlocked = data.arePrerequisitesMet(node);
@@ -263,20 +313,25 @@ public class CosmicSkillTreeScreen extends Screen {
                 int lineColor;
                 float thickness;
                 if (nodeLvl > 0 && conditionMet) {
-                    lineColor = 0xFF00E5FF;
-                    thickness = 3.2F;
+                    // Изученная связь — ярко-голубая энергетическая линия
+                    int alpha = MathHelper.clamp((int) (230 * linePulse + 25), 200, 255);
+                    lineColor = (alpha << 24) | 0x00E5FF;
+                    thickness = 3.8F;
                 } else if (conditionMet && nodeUnlocked) {
-                    lineColor = 0xCC64FFDA;
-                    thickness = 2.4F;
+                    // Доступная для прокачки связь — бирюзово-зелёная
+                    lineColor = 0xEE00E676;
+                    thickness = 3.0F;
                 } else if (parentLvl > 0) {
-                    lineColor = 0x883D85C6;
-                    thickness = 1.8F;
+                    // Родительский узел начал качаться, но ещё не достиг требуемого уровня
+                    lineColor = 0xCC4FC3F7;
+                    thickness = 2.4F;
                 } else {
-                    lineColor = 0x5526466D;
-                    thickness = 1.4F;
+                    // Закрытая ветка — чётко видимая тёмно-лазурная линия созвездия
+                    lineColor = 0xAA29527A;
+                    thickness = 2.0F;
                 }
 
-                drawSmoothLine(stack, parent.getX(), parent.getY(), node.getX(), node.getY(), thickness, lineColor);
+                drawConnectionLine(stack, parent.getX(), parent.getY(), node.getX(), node.getY(), thickness, lineColor);
             }
         }
     }
@@ -355,22 +410,16 @@ public class CosmicSkillTreeScreen extends Screen {
         fill(matrixStack, 0, 34, this.width, 35, 0xFF00B0FF);
 
         // Заголовок по центру
-        drawCenteredString(matrixStack, this.font, this.title, this.width / 2, 7, 0xFF80D8FF);
+        drawCenteredString(matrixStack, this.font, this.title, this.width / 2, 11, 0xFF80D8FF);
 
         // Доступные очки навыков слева
         String pointsStr = "✦ Доступные очки навыков: " + data.getAvailablePoints();
         this.font.drawShadow(matrixStack, pointsStr, 14, 11, 0xFF00E676);
 
-        // Информация о рубежах Better Leveling справа
-        String milestoneStr = "Рубежей Better Leveling (каждые 5 ур.): " + data.getLastRewardedMilestones();
-        int mw = this.font.width(milestoneStr);
-        this.font.drawShadow(matrixStack, milestoneStr, this.width - mw - 14, 11, 0xFFFFD54F);
-
-        // Нижняя строка с подсказкой управления
-        fill(matrixStack, 0, this.height - 20, this.width, this.height, 0xCC040D21);
-        fill(matrixStack, 0, this.height - 21, this.width, this.height - 20, 0x8800B0FF);
-        ITextComponent hint = new TranslationTextComponent("gui.blcosmicaddon.hint");
-        drawCenteredString(matrixStack, this.font, hint, this.width / 2, this.height - 14, 0xFFB0BEC5);
+        // Использованное количество очков навыков справа (изначально 0)
+        String spentStr = "Использованное очков навыков: " + data.getSpentPoints();
+        int sw = this.font.width(spentStr);
+        this.font.drawShadow(matrixStack, spentStr, this.width - sw - 14, 11, 0xFFFFD54F);
     }
 
     private void renderSkillNodeTooltip(MatrixStack matrixStack, SkillNode node, ICosmicSkillData data, int mouseX, int mouseY) {
@@ -380,14 +429,12 @@ public class CosmicSkillTreeScreen extends Screen {
         boolean prereqsMet = data.arePrerequisitesMet(node);
         boolean canUpgrade = data.canUpgradeNode(node);
 
-        // Название и категория
         String titlePrefix = node.isKeystone() ? "§6§l" : "§b§l";
         lines.add(new StringTextComponent(titlePrefix + node.getName()));
         lines.add(new StringTextComponent("§9Ветвь: §f" + node.getCategory().getDisplayName()));
         lines.add(new StringTextComponent("§7" + node.getDescription()));
         lines.add(new StringTextComponent(""));
 
-        // Уровень и бонус
         lines.add(new StringTextComponent("§fУровень прокачки: §e" + currentLvl + " §7/ §e" + maxLvl));
         double currentBonus = node.getTotalBonus(currentLvl);
         double nextBonus = node.getTotalBonus(Math.min(maxLvl, currentLvl + 1));
@@ -403,7 +450,6 @@ public class CosmicSkillTreeScreen extends Screen {
             lines.add(new StringTextComponent("§6★ Достигнут максимальный уровень навыка! ★"));
         }
 
-        // Список требуемых предыдущих навыков (пререквизитов)
         if (!node.getPrerequisites().isEmpty()) {
             lines.add(new StringTextComponent(""));
             lines.add(new StringTextComponent("§eТребования для разблокировки:"));
@@ -426,7 +472,7 @@ public class CosmicSkillTreeScreen extends Screen {
         } else if (!prereqsMet) {
             lines.add(new StringTextComponent("§c🔒 Закрыто: сначала прокачайте предыдущие навыки ветки!"));
         } else {
-            lines.add(new StringTextComponent("§cНедостаточно очков! Повысьте любой навык в Better Leveling на 5 уровней."));
+            lines.add(new StringTextComponent("§cНедостаточно очков! Получите 5 уровень любого навыка."));
         }
 
         this.renderComponentTooltip(matrixStack, lines, mouseX, mouseY);
@@ -450,7 +496,11 @@ public class CosmicSkillTreeScreen extends Screen {
         return String.format("%.2f", val);
     }
 
-    private void drawSmoothLine(MatrixStack matrixStack, float x1, float y1, float x2, float y2, float width, int argbColor) {
+    /**
+     * Отрисовывает двустороннюю цветную линию между узлами дерева навыков.
+     * Отключает CULL_FACE, чтобы линия гарантированно отображалась при любом направлении вектора!
+     */
+    private void drawConnectionLine(MatrixStack matrixStack, float x1, float y1, float x2, float y2, float width, int argbColor) {
         float a = ((argbColor >> 24) & 0xFF) / 255.0F;
         float r = ((argbColor >> 16) & 0xFF) / 255.0F;
         float g = ((argbColor >> 8) & 0xFF) / 255.0F;
@@ -470,8 +520,21 @@ public class CosmicSkillTreeScreen extends Screen {
 
         RenderSystem.enableBlend();
         RenderSystem.disableTexture();
+        RenderSystem.disableCull();
         RenderSystem.defaultBlendFunc();
 
+        // Мягкое внешнее свечение линии
+        float glowNx = nx * 1.8F;
+        float glowNy = ny * 1.8F;
+        float glowAlpha = a * 0.28F;
+        buffer.begin(GL11.GL_QUADS, DefaultVertexFormats.POSITION_COLOR);
+        buffer.vertex(pose, x1 + glowNx, y1 + glowNy, 0.0F).color(r, g, b, glowAlpha).endVertex();
+        buffer.vertex(pose, x1 - glowNx, y1 - glowNy, 0.0F).color(r, g, b, glowAlpha).endVertex();
+        buffer.vertex(pose, x2 - glowNx, y2 - glowNy, 0.0F).color(r, g, b, glowAlpha).endVertex();
+        buffer.vertex(pose, x2 + glowNx, y2 + glowNy, 0.0F).color(r, g, b, glowAlpha).endVertex();
+        tessellator.end();
+
+        // Основное ядро линии
         buffer.begin(GL11.GL_QUADS, DefaultVertexFormats.POSITION_COLOR);
         buffer.vertex(pose, x1 + nx, y1 + ny, 0.0F).color(r, g, b, a).endVertex();
         buffer.vertex(pose, x1 - nx, y1 - ny, 0.0F).color(r, g, b, a).endVertex();
@@ -479,6 +542,7 @@ public class CosmicSkillTreeScreen extends Screen {
         buffer.vertex(pose, x2 + nx, y2 + ny, 0.0F).color(r, g, b, a).endVertex();
         tessellator.end();
 
+        RenderSystem.enableCull();
         RenderSystem.enableTexture();
         RenderSystem.disableBlend();
     }
@@ -548,14 +612,12 @@ public class CosmicSkillTreeScreen extends Screen {
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-        // Клавиша R центрирует камеру на начало дерева
         if (keyCode == GLFW.GLFW_KEY_R) {
             this.panX = 0.0;
             this.panY = 0.0;
             this.zoom = 1.0F;
             return true;
         }
-        // Повторное нажатие F7 закрывает экран
         if (ClientModEvents.OPEN_SKILL_TREE_KEY != null && ClientModEvents.OPEN_SKILL_TREE_KEY.matches(keyCode, scanCode)) {
             this.onClose();
             return true;
