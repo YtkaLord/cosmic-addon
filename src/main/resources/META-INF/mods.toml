@@ -1,0 +1,36 @@
+modLoader="javafml"
+loaderVersion="[36,)"
+license="MIT"
+
+[[mods]]
+modId="blcosmicaddon"
+version="1.0.0"
+displayName="Better Leveling: Cosmic Skill Tree"
+authors="CosmicAddonDev"
+description='''
+Огромное космическое дерево навыков (F7) для мода Better Leveling на Forge 1.16.5 (36.2.39).
+Очки навыков начисляются за каждые 5 уровней прокачки любого навыка в Better Leveling!
+Включает более 45 навыков с глубокими ветками, слияниями (требующими прокачки нескольких веток),
+процентными бонусами (+0.5% к урону, шанс и сила крита, дроп с мобов, мульти-крючки на рыбалке, скорость копания, бег и многое другое).
+'''
+
+[[dependencies.blcosmicaddon]]
+    modId="forge"
+    mandatory=true
+    versionRange="[36.2.0,)"
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.blcosmicaddon]]
+    modId="minecraft"
+    mandatory=true
+    versionRange="[1.16.5,1.17)"
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.blcosmicaddon]]
+    modId="betterleveling"
+    mandatory=false
+    versionRange="[0.1.0,)"
+    ordering="AFTER"
+    side="BOTH"

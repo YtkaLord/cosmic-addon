@@ -1,0 +1,85 @@
+buildscript {
+    repositories {
+        maven { url = 'https://maven.minecraftforge.net' }
+        mavenCentral()
+    }
+    dependencies {
+        classpath group: 'net.minecraftforge.gradle', name: 'ForgeGradle', version: '5.1.+', changing: true
+    }
+}
+apply plugin: 'net.minecraftforge.gradle'
+apply plugin: 'eclipse'
+apply plugin: 'maven-publish'
+
+version = '1.0.0'
+group = 'com.cosmic.betterlevelingaddon'
+archivesBaseName = 'betterleveling-cosmic-addon-1.16.5'
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(8)
+
+println('Java: ' + System.getProperty('java.version') + ' JVM: ' + System.getProperty('java.vm.version') + '(' + System.getProperty('java.vendor') + ') Arch: ' + System.getProperty('os.arch'))
+
+minecraft {
+    mappings channel: 'official', version: '1.16.5'
+
+    runs {
+        client {
+            workingDirectory project.file('run')
+            property 'forge.logging.markers', 'REGISTRIES'
+            property 'forge.logging.console.level', 'debug'
+            mods {
+                blcosmicaddon {
+                    source sourceSets.main
+                }
+            }
+        }
+
+        server {
+            workingDirectory project.file('run')
+            property 'forge.logging.markers', 'REGISTRIES'
+            property 'forge.logging.console.level', 'debug'
+            mods {
+                blcosmicaddon {
+                    source sourceSets.main
+                }
+            }
+        }
+    }
+}
+
+repositories {
+    maven {
+        url "https://cursemaven.com"
+        content {
+            includeGroup "curse.maven"
+        }
+    }
+    flatDir {
+        dirs 'libs'
+    }
+}
+
+dependencies {
+    // Точная версия Forge 1.16.5 - 36.2.39 (использует LWJGL 3.2.2)
+    minecraft 'net.minecraftforge:forge:1.16.5-36.2.39'
+
+    // Опциональная зависимость на Better Leveling 1.16.5 (CurseMaven File ID: 4490291 для 0.6.2)
+    // Мод также работает через универсальный NBT/Reflection мост, поэтому компилируется даже без локального jar
+    // compileOnly fg.deobf("curse.maven:better-leveling-699180:4490291")
+}
+
+jar {
+    manifest {
+        attributes([
+            "Specification-Title": "blcosmicaddon",
+            "Specification-Vendor": "CosmicAddon",
+            "Specification-Version": "1",
+            "Implementation-Title": project.name,
+            "Implementation-Version": "${version}",
+            "Implementation-Vendor" :"CosmicAddon",
+            "Implementation-Timestamp": new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
+        ])
+    }
+}
+
+jar.finalizedBy('reobfJar')

@@ -1,0 +1,9 @@
+{
+  "key.categories.blcosmicaddon": "Better Leveling: Космическое Дерево",
+  "key.blcosmicaddon.open_tree": "Открыть Космическое Дерево Навыков (F7)",
+  "gui.blcosmicaddon.title": "✦ Космическое Дерево Навыков (Better Leveling) ✦",
+  "gui.blcosmicaddon.points": "Очки навыков: %d",
+  "gui.blcosmicaddon.bl_levels": "Уровней в Better Leveling: %d (След. очко: %d/5)",
+  "gui.blcosmicaddon.hint": "ЛКМ по узлу — Прокачать | Перетаскивание мышью — Двигать карту | Колесико — Масштаб | R — Центрировать",
+  "msg.blcosmicaddon.point_gained": "§b✦ [Космическое Дерево] §fВы достигли нового рубежа (кратно 5 ур.) в §eBetter Leveling§f! Получено очко навыков (§a+%d§f, всего доступно: §b%d§f). Нажмите §eF7§f!"
+}
