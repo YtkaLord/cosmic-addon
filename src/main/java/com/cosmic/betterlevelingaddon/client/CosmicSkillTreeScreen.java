@@ -589,8 +589,8 @@ public class CosmicSkillTreeScreen extends Screen {
     @Override
     public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
         if (isDragging && button == 0) {
-            panX = MathHelper.clamp(panX + dragX, -1100.0, 1100.0);
-            panY = MathHelper.clamp(panY + dragY, -1100.0, 1100.0);
+            panX = MathHelper.clamp(panX + dragX, -1800.0, 1800.0);
+            panY = MathHelper.clamp(panY + dragY, -1800.0, 1800.0);
             return true;
         }
         return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
@@ -600,9 +600,9 @@ public class CosmicSkillTreeScreen extends Screen {
     public boolean mouseScrolled(double mouseX, double mouseY, double delta) {
         float prevZoom = this.zoom;
         if (delta > 0) {
-            this.zoom = MathHelper.clamp(this.zoom + 0.1F, 0.45F, 2.2F);
+            this.zoom = MathHelper.clamp(this.zoom + 0.1F, 0.30F, 2.2F);
         } else if (delta < 0) {
-            this.zoom = MathHelper.clamp(this.zoom - 0.1F, 0.45F, 2.2F);
+            this.zoom = MathHelper.clamp(this.zoom - 0.1F, 0.30F, 2.2F);
         }
         if (this.zoom != prevZoom) {
             return true;

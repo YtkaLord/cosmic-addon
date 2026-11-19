@@ -15,13 +15,9 @@ import java.util.IdentityHashMap;
 import java.util.Map;
 
 /**
- * Мост интеграции с модами на прокачку навыков:
- * 1) Project MMO (PMMO 1.16.5) — именно этот мод показывает полоску "Рыболовное дело 5.13", "Бой", "Выносливость" и т.д.
- * 2) Better Leveling (Darkorg69 1.16.5) — специализации и навыки в ForgeCaps.
- *
- * Возвращает карту: [Идентификатор навыка -> Текущий уровень навыка].
- * Как только любой навык (Рыбалка, Бой, Выносливость, Шахтёрство и т.д.) достигает уровня 5, 10, 15, 20...,
- * игроку начисляется очко навыков для Космического Дерева!
+ * Мост интеграции с Project MMO (3.67.6) и Better Leveling (0.3.0):
+ * 1) Читает уровни навыков из Project MMO и Better Leveling (СТРОГО исключая наш собственный аддон!).
+ * 2) Начисляет опыт Farming в Project MMO за модовые растения (Farmer's Delight, Mystical Agriculture и др.).
  */
 public class BetterLevelingBridge {
 
@@ -36,20 +32,30 @@ public class BetterLevelingBridge {
     private static Method pmmoLevelAtXpIntMethod = null;
     private static Method pmmoSkillGetLevelMethod = null;
 
+    // Кэш метода выдачи опыта в PMMO (APIUtils.addXp или XP.awardXp)
+    private static Method pmmoAwardXpMethod = null;
+    private static int pmmoAwardSignatureType = 0; // 1 = APIUtils.addXp(6), 2 = XP.awardXp(7), 3 = XP.awardXp(6)
+
     public static Map<String, Integer> scanAllSkillLevels(ServerPlayerEntity player) {
         Map<String, Integer> discoveredSkills = new HashMap<>();
 
-        // =========================================================================
-        // 1. ПРЯМАЯ ИНТЕГРАЦИЯ С PROJECT MMO (PMMO 1.16.5: "Рыболовное дело 5.13", "Бой", "Выносливость" и др.)
-        // =========================================================================
+        // 1. Project MMO (PMMO 1.16.5)
         scanProjectMmoSkills(player, discoveredSkills);
 
-        // =========================================================================
-        // 2. ИНТЕГРАЦИЯ С BETTER LEVELING (ForgeCaps и CapabilityManager)
-        // =========================================================================
+        // 2. Better Leveling (строго без самосканирования нашего аддона!)
         scanBetterLevelingCapabilities(player, discoveredSkills);
 
         return discoveredSkills;
+    }
+
+    private static boolean isOurOwnModKey(String key) {
+        if (key == null) return true;
+        String lower = key.toLowerCase();
+        return lower.contains("blcosmicaddon")
+                || lower.contains("betterlevelingaddon")
+                || lower.contains("com.cosmic")
+                || lower.contains("cosmic_skills")
+                || lower.contains("icosmicskilldata");
     }
 
     private static void initPmmoReflection() {
@@ -75,12 +81,83 @@ public class BetterLevelingBridge {
             } catch (Exception ignored) {
             }
 
+            // Поиск метода начисления опыта в Project MMO
+            try {
+                Class<?> apiUtilsClass = Class.forName("harmonised.pmmo.api.APIUtils");
+                for (Method m : apiUtilsClass.getMethods()) {
+                    if (m.getName().equals("addXp")) {
+                        Class<?>[] params = m.getParameterTypes();
+                        if (params.length == 6
+                                && params[0] == String.class
+                                && PlayerEntity.class.isAssignableFrom(params[1])
+                                && params[2] == double.class
+                                && params[3] == String.class
+                                && params[4] == boolean.class
+                                && params[5] == boolean.class) {
+                            pmmoAwardXpMethod = m;
+                            pmmoAwardSignatureType = 1;
+                            break;
+                        }
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+
+            if (pmmoAwardXpMethod == null) {
+                for (Method m : xpClass.getMethods()) {
+                    if (m.getName().equals("awardXp")) {
+                        Class<?>[] params = m.getParameterTypes();
+                        if (params.length == 7
+                                && PlayerEntity.class.isAssignableFrom(params[0])
+                                && params[1] == String.class
+                                && params[2] == String.class
+                                && params[3] == double.class) {
+                            pmmoAwardXpMethod = m;
+                            pmmoAwardSignatureType = 2;
+                            break;
+                        } else if (params.length == 6
+                                && PlayerEntity.class.isAssignableFrom(params[0])
+                                && params[1] == String.class
+                                && params[2] == String.class
+                                && params[3] == double.class) {
+                            pmmoAwardXpMethod = m;
+                            pmmoAwardSignatureType = 3;
+                            break;
+                        }
+                    }
+                }
+            }
+
             pmmoPresent = true;
         } catch (ClassNotFoundException e) {
             pmmoPresent = false;
         } catch (Exception e) {
             pmmoPresent = false;
         }
+    }
+
+    /**
+     * Выдаёт опыт в навык Project MMO (например, "farming" за сбор модовых растений).
+     */
+    public static boolean awardPmmoXp(ServerPlayerEntity player, String skillName, double amount, String sourceDesc) {
+        if (player == null || amount <= 0) return false;
+        initPmmoReflection();
+        if (!pmmoPresent || pmmoAwardXpMethod == null) return false;
+
+        try {
+            if (pmmoAwardSignatureType == 1) {
+                pmmoAwardXpMethod.invoke(null, skillName, player, amount, sourceDesc, false, false);
+                return true;
+            } else if (pmmoAwardSignatureType == 2) {
+                pmmoAwardXpMethod.invoke(null, player, skillName, sourceDesc, amount, false, false, false);
+                return true;
+            } else if (pmmoAwardSignatureType == 3) {
+                pmmoAwardXpMethod.invoke(null, player, skillName, sourceDesc, amount, false, false);
+                return true;
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
     }
 
     @SuppressWarnings("unchecked")
@@ -135,7 +212,7 @@ public class BetterLevelingBridge {
     }
 
     private static void scanBetterLevelingCapabilities(ServerPlayerEntity player, Map<String, Integer> discoveredSkills) {
-        // А) Читаем ForgeCaps игрока через сериализацию сущности
+        // А) Читаем ForgeCaps игрока (исключая наш собственный мод!)
         try {
             CompoundNBT fullPlayerTag = new CompoundNBT();
             player.saveWithoutId(fullPlayerTag);
@@ -143,11 +220,9 @@ public class BetterLevelingBridge {
             if (fullPlayerTag.contains("ForgeCaps", 10)) {
                 CompoundNBT forgeCaps = fullPlayerTag.getCompound("ForgeCaps");
                 for (String capKey : forgeCaps.getAllKeys()) {
+                    if (isOurOwnModKey(capKey)) continue;
                     String lowerKey = capKey.toLowerCase();
-                    if (lowerKey.contains("blcosmicaddon")) continue;
-                    // Читаем только capabilities модов Better Leveling / Leveling / Reskillable
-                    if (lowerKey.contains("betterleveling") || lowerKey.contains("better_leveling")
-                            || lowerKey.contains("darkorg") || lowerKey.contains("skill") || lowerKey.contains("leveling")) {
+                    if (lowerKey.startsWith("betterleveling:") || lowerKey.contains("darkorg")) {
                         INBT capData = forgeCaps.get(capKey);
                         extractSkillLevelsRecursive("bl:" + capKey, capData, discoveredSkills, 0);
                     }
@@ -156,7 +231,7 @@ public class BetterLevelingBridge {
         } catch (Exception ignored) {
         }
 
-        // Б) Дополнительно проверяем CapabilityManager на провайдеры betterleveling / darkorg
+        // Б) Проверяем CapabilityManager (СТРОГО исключая наш пакет com.cosmic.betterlevelingaddon!)
         if (!capReflectionFailed) {
             try {
                 if (providersFieldCached == null) {
@@ -168,15 +243,16 @@ public class BetterLevelingBridge {
                         (IdentityHashMap<String, Capability<?>>) providersFieldCached.get(CapabilityManager.INSTANCE);
                 if (providers != null) {
                     for (Map.Entry<String, Capability<?>> entry : providers.entrySet()) {
-                        String name = entry.getKey().toLowerCase();
-                        if (name.contains("blcosmicaddon")) continue;
-                        if (name.contains("betterleveling") || name.contains("darkorg")) {
+                        String name = entry.getKey();
+                        if (isOurOwnModKey(name)) continue;
+                        String lower = name.toLowerCase();
+                        if (lower.contains("darkorg") || (lower.contains("betterleveling") && !lower.contains("addon"))) {
                             Capability<?> cap = entry.getValue();
                             player.getCapability(cap).ifPresent(inst -> {
                                 try {
                                     INBT nbt = writeCapabilitySafe(cap, inst);
                                     if (nbt != null) {
-                                        extractSkillLevelsRecursive("blcap:" + name, nbt, discoveredSkills, 0);
+                                        extractSkillLevelsRecursive("blcap:" + lower, nbt, discoveredSkills, 0);
                                     }
                                 } catch (Exception ignored2) {
                                 }
@@ -217,7 +293,8 @@ public class BetterLevelingBridge {
 
                 if (lowerKey.contains("xp") || lowerKey.contains("exp") || lowerKey.contains("point")
                         || lowerKey.contains("cost") || lowerKey.contains("unlocked") || lowerKey.contains("choice")
-                        || lowerKey.contains("spec") || lowerKey.contains("uuid") || lowerKey.contains("time")) {
+                        || lowerKey.contains("spec") || lowerKey.contains("uuid") || lowerKey.contains("time")
+                        || lowerKey.contains("milestone")) {
                     continue;
                 }
 
@@ -228,7 +305,6 @@ public class BetterLevelingBridge {
                         recordMaxLevel(outSkills, skillKey.toLowerCase(), val);
                     }
                 } else if (child != null && (child.getId() == 5 || child.getId() == 6)) {
-                    // FloatNBT (5) или DoubleNBT (6) — если уровень хранится дробным числом (например, 5.13)
                     double dVal = compound.getDouble(key);
                     if (dVal >= 1.0 && dVal <= 1000.0 && (lowerKey.contains("level") || lowerKey.contains("lvl"))) {
                         recordMaxLevel(outSkills, (path + "." + key).toLowerCase(), (int) Math.floor(dVal));

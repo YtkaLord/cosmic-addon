@@ -1,9 +1,8 @@
 {
   "key.categories.blcosmicaddon": "Better Leveling: Cosmic Skill Tree",
   "key.blcosmicaddon.open_tree": "Open Cosmic Skill Tree (F7)",
-  "gui.blcosmicaddon.title": "✦ Cosmic Skill Tree (Better Leveling) ✦",
+  "gui.blcosmicaddon.title": "✦ Cosmic Skill Tree ✦",
   "gui.blcosmicaddon.points": "Skill Points: %d",
-  "gui.blcosmicaddon.bl_levels": "Better Leveling Milestones: %d",
-  "gui.blcosmicaddon.hint": "LMB on Node — Upgrade | Drag Mouse — Pan Canvas | Scroll — Zoom | R — Center View",
-  "msg.blcosmicaddon.point_gained": "§b✦ [Cosmic Skill Tree] §fYou reached a 5-level milestone in §eBetter Leveling§f! Earned Skill Point (§a+%d§f, Available: §b%d§f). Press §eF7§f!"
+  "gui.blcosmicaddon.spent_points": "Used Skill Points: %d",
+  "msg.blcosmicaddon.point_gained": "§b✦ [Cosmic Skill Tree] §fYou reached a 5-level skill milestone! Earned Skill Point (§a+%d§f, available: §b%d§f). Press §eF7§f!"
 }
